@@ -220,9 +220,9 @@ impl Context {
         let mut prepared = Vec::new();
         for (index, item) in records.try_iter()?.enumerate() {
             let item = item?;
-            let dict = item.downcast::<PyDict>().map_err(|_| {
-                PyTypeError::new_err(format!("records[{index}] must be a dict"))
-            })?;
+            let dict = item
+                .downcast::<PyDict>()
+                .map_err(|_| PyTypeError::new_err(format!("records[{index}] must be a dict")))?;
             prepared.push(self.prepare_record_from_dict(dict, index)?);
         }
 
@@ -232,8 +232,7 @@ impl Context {
 
         let context_records: Vec<ContextRecord> =
             prepared.iter().map(|item| item.record.clone()).collect();
-        let add_res =
-            py.allow_threads(|| self.runtime.block_on(self.store.add(&context_records)));
+        let add_res = py.allow_threads(|| self.runtime.block_on(self.store.add(&context_records)));
         add_res.map_err(to_py_err)?;
 
         for item in prepared {
@@ -331,6 +330,33 @@ impl Context {
         record.map(|record| record_to_py(py, record)).transpose()
     }
 
+    #[pyo3(signature = (id = None, external_id = None))]
+    fn delete(
+        &mut self,
+        py: Python<'_>,
+        id: Option<String>,
+        external_id: Option<String>,
+    ) -> PyResult<bool> {
+        match (id, external_id) {
+            (Some(id), None) => py.allow_threads(|| {
+                self.runtime
+                    .block_on(self.store.delete_by_id(&id))
+                    .map_err(to_py_err)
+            }),
+            (None, Some(external_id)) => py.allow_threads(|| {
+                self.runtime
+                    .block_on(self.store.delete_by_external_id(&external_id))
+                    .map_err(to_py_err)
+            }),
+            (None, None) => Err(PyRuntimeError::new_err(
+                "delete() requires either id or external_id",
+            )),
+            (Some(_), Some(_)) => Err(PyRuntimeError::new_err(
+                "delete() accepts only one of id or external_id",
+            )),
+        }
+    }
+
     #[pyo3(signature = (target_rows_per_fragment=None, materialize_deletions=None))]
     fn compact(
         &mut self,
@@ -382,13 +408,10 @@ impl Context {
     ) -> PyResult<PreparedRecord> {
         let role = required_item(dict, "role", index)?.extract::<String>()?;
         let content = required_item(dict, "content", index)?;
-        let data_type =
-            optional_item(dict, "data_type")?.map(|value| value.extract::<String>());
-        let embedding =
-            optional_item(dict, "embedding")?.map(|value| value.extract::<Vec<f32>>());
+        let data_type = optional_item(dict, "data_type")?.map(|value| value.extract::<String>());
+        let embedding = optional_item(dict, "embedding")?.map(|value| value.extract::<Vec<f32>>());
         let bot_id = optional_item(dict, "bot_id")?.map(|value| value.extract::<String>());
-        let session_id =
-            optional_item(dict, "session_id")?.map(|value| value.extract::<String>());
+        let session_id = optional_item(dict, "session_id")?.map(|value| value.extract::<String>());
         let external_id =
             optional_item(dict, "external_id")?.map(|value| value.extract::<String>());
 
@@ -404,6 +427,7 @@ impl Context {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_record(
         &self,
         role: String,
@@ -471,10 +495,7 @@ fn required_item<'py>(
     })
 }
 
-fn optional_item<'py>(
-    dict: &Bound<'py, PyDict>,
-    key: &str,
-) -> PyResult<Option<Bound<'py, PyAny>>> {
+fn optional_item<'py>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     Ok(dict.get_item(key)?.filter(|value| !value.is_none()))
 }
 
