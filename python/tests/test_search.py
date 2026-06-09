@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Any
 
@@ -12,8 +13,8 @@ from lance_context.api import (
 
 class DummyInner:
     def __init__(self) -> None:
-        self.search_calls: list[tuple[list[float], int | None]] = []
-        self.list_calls: list[tuple[int | None, int | None]] = []
+        self.search_calls: list[tuple[list[float], int | None, str | None]] = []
+        self.list_calls: list[tuple[int | None, int | None, str | None]] = []
         self.get_calls: list[tuple[str | None, str | None]] = []
         self.delete_calls: list[tuple[str | None, str | None]] = []
         self.add_calls: list[
@@ -22,6 +23,7 @@ class DummyInner:
                 Any,
                 str | None,
                 list[float] | None,
+                str | None,
                 str | None,
                 str | None,
                 str | None,
@@ -38,26 +40,33 @@ class DummyInner:
         bot_id: str | None,
         session_id: str | None,
         external_id: str | None,
+        metadata_json: str | None,
     ):
         self.add_calls.append(
-            (role, content, data_type, embedding, bot_id, session_id, external_id)
+            (
+                role,
+                content,
+                data_type,
+                embedding,
+                bot_id,
+                session_id,
+                external_id,
+                metadata_json,
+            )
         )
 
     def get(self, id: str | None, external_id: str | None):
         self.get_calls.append((id, external_id))
         if id == "rec-1" or external_id == "source-1":
-            return self.list(None, None)[0]
+            return self.list(None, None, None)[0]
         return None
 
     def delete(self, id: str | None, external_id: str | None):
         self.delete_calls.append((id, external_id))
         return id == "rec-1" or external_id == "source-1"
 
-    def add_many(self, records: list[dict[str, Any]]):
-        self.add_many_calls.append(records)
-
-    def search(self, vector: list[float], limit: int | None):
-        self.search_calls.append((vector, limit))
+    def search(self, vector: list[float], limit: int | None, filters_json: str | None):
+        self.search_calls.append((vector, limit, filters_json))
         return [
             {
                 "id": "rec-1",
@@ -73,11 +82,15 @@ class DummyInner:
                 "distance": 0.12,
                 "created_at": "2024-01-01T12:00:00Z",
                 "state_metadata": {"step": 1},
+                "metadata": {"scope": "team", "tags": ["runbook"]},
             }
         ]
 
-    def list(self, limit: int | None, offset: int | None):
-        self.list_calls.append((limit, offset))
+    def add_many(self, records: list[dict[str, Any]]):
+        self.add_many_calls.append(records)
+
+    def list(self, limit: int | None, offset: int | None, filters_json: str | None):
+        self.list_calls.append((limit, offset, filters_json))
         return [
             {
                 "id": "rec-1",
@@ -92,6 +105,7 @@ class DummyInner:
                 "embedding": [0.1, 0.2],
                 "created_at": "2024-01-01T12:00:00Z",
                 "state_metadata": {"step": 1},
+                "metadata": {"scope": "team", "tags": ["runbook"]},
             },
             {
                 "id": "rec-2",
@@ -106,6 +120,7 @@ class DummyInner:
                 "embedding": None,
                 "created_at": "2024-01-02T12:00:00Z",
                 "state_metadata": None,
+                "metadata": None,
             },
         ]
 
@@ -150,11 +165,24 @@ def test_context_search_formats_results():
 
     hits = ctx.search([0.5, 0.4], limit=3)
 
-    assert dummy.search_calls == [([0.5, 0.4], 3)]
+    assert dummy.search_calls == [([0.5, 0.4], 3, None)]
     assert hits[0]["id"] == "rec-1"
     assert hits[0]["text"] == "hello"
     assert hits[0]["binary"] is None
+    assert hits[0]["metadata"] == {"scope": "team", "tags": ["runbook"]}
     assert isinstance(hits[0]["created_at"], datetime)
+
+
+def test_context_search_forwards_filters():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.search([0.5, 0.4], filters={"bot_id": "support_bot", "scope": "team"})
+
+    filters_json = dummy.search_calls[0][2]
+    assert filters_json is not None
+    assert json.loads(filters_json) == {"bot_id": "support_bot", "scope": "team"}
 
 
 def test_normalize_record_without_distance():
@@ -184,11 +212,12 @@ def test_context_list_returns_entries():
 
     entries = ctx.list(limit=10, offset=5)
 
-    assert dummy.list_calls == [(10, 5)]
+    assert dummy.list_calls == [(10, 5, None)]
     assert len(entries) == 2
     assert entries[0]["id"] == "rec-1"
     assert entries[0]["text"] == "hello"
     assert entries[0]["role"] == "user"
+    assert entries[0]["metadata"] == {"scope": "team", "tags": ["runbook"]}
     assert "distance" not in entries[0]
     assert entries[1]["id"] == "rec-2"
     assert entries[1]["text"] == "world"
@@ -292,7 +321,22 @@ def test_context_list_default_args():
 
     ctx.list()
 
-    assert dummy.list_calls == [(None, None)]
+    assert dummy.list_calls == [(None, None, None)]
+
+
+def test_context_list_forwards_filters():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.list(filters={"role": "user", "tags": {"contains": "runbook"}})
+
+    filters_json = dummy.list_calls[0][2]
+    assert filters_json is not None
+    assert json.loads(filters_json) == {
+        "role": "user",
+        "tags": {"contains": "runbook"},
+    }
 
 
 def test_context_add_with_embedding():
@@ -303,9 +347,16 @@ def test_context_add_with_embedding():
     embedding = [0.1, 0.2, 0.3]
     ctx.add("user", "hello", embedding=embedding)
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "user"
     assert content == "hello"
     assert data_type is None
@@ -313,6 +364,7 @@ def test_context_add_with_embedding():
     assert bot_id is None
     assert session_id is None
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_without_embedding():
@@ -322,15 +374,23 @@ def test_context_add_without_embedding():
 
     ctx.add("assistant", "world")
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "assistant"
     assert content == "world"
     assert passed_embedding is None
     assert bot_id is None
     assert session_id is None
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_with_content_type_and_embedding():
@@ -341,15 +401,23 @@ def test_context_add_with_content_type_and_embedding():
     embedding = [0.5, 0.6]
     ctx.add("system", "prompt", content_type="text/markdown", embedding=embedding)
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "system"
     assert data_type == "text/markdown"
     assert passed_embedding == [0.5, 0.6]
     assert bot_id is None
     assert session_id is None
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_with_bot_id():
@@ -359,14 +427,22 @@ def test_context_add_with_bot_id():
 
     ctx.add("user", "hello", bot_id="support_bot")
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "user"
     assert content == "hello"
     assert bot_id == "support_bot"
     assert session_id is None
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_with_session_id():
@@ -376,14 +452,22 @@ def test_context_add_with_session_id():
 
     ctx.add("user", "hello", session_id="user_123")
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "user"
     assert content == "hello"
     assert bot_id is None
     assert session_id == "user_123"
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_with_agent_and_session_id():
@@ -393,13 +477,21 @@ def test_context_add_with_agent_and_session_id():
 
     ctx.add("user", "hello", bot_id="sales_bot", session_id="conv_456")
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "user"
     assert bot_id == "sales_bot"
     assert session_id == "conv_456"
     assert external_id is None
+    assert metadata_json is None
 
 
 def test_context_add_with_all_options():
@@ -415,16 +507,45 @@ def test_context_add_with_all_options():
         bot_id="bot",
         session_id="sess",
         external_id="doc-1#chunk-1",
+        metadata={
+            "tenant": "example-org",
+            "scope": "team",
+            "tags": ["runbook", "ownership"],
+            "confidence": 0.92,
+        },
     )
 
-    role, content, data_type, passed_embedding, bot_id, session_id, external_id = (
-        _only_add_call(dummy)
-    )
+    (
+        role,
+        content,
+        data_type,
+        passed_embedding,
+        bot_id,
+        session_id,
+        external_id,
+        metadata_json,
+    ) = _only_add_call(dummy)
     assert role == "user"
     assert passed_embedding == [0.1, 0.2]
     assert bot_id == "bot"
     assert session_id == "sess"
     assert external_id == "doc-1#chunk-1"
+    assert metadata_json is not None
+    assert json.loads(metadata_json) == {
+        "tenant": "example-org",
+        "scope": "team",
+        "tags": ["runbook", "ownership"],
+        "confidence": 0.92,
+    }
+
+
+def test_context_add_rejects_non_json_metadata():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    with pytest.raises(TypeError, match="metadata must be JSON-serializable"):
+        ctx.add("user", "hello", metadata={"bad": object()})
 
 
 def test_context_add_many_normalizes_records():
@@ -457,6 +578,7 @@ def test_context_add_many_normalizes_records():
                 "bot_id": None,
                 "session_id": None,
                 "external_id": None,
+                "metadata_json": None,
             },
             {
                 "role": "assistant",
@@ -466,6 +588,7 @@ def test_context_add_many_normalizes_records():
                 "bot_id": "bot",
                 "session_id": "sess",
                 "external_id": "doc-1#chunk-2",
+                "metadata_json": None,
             },
         ]
     ]
@@ -479,6 +602,26 @@ def test_context_add_many_accepts_data_type_alias():
     ctx.add_many([{"role": "system", "content": "prompt", "data_type": "text/plain"}])
 
     assert dummy.add_many_calls[0][0]["data_type"] == "text/plain"
+
+
+def test_context_add_many_forwards_metadata():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.add_many(
+        [
+            {
+                "role": "user",
+                "content": "hello",
+                "metadata": {"scope": "team", "tags": ["runbook"]},
+            }
+        ]
+    )
+
+    metadata_json = dummy.add_many_calls[0][0]["metadata_json"]
+    assert metadata_json is not None
+    assert json.loads(metadata_json) == {"scope": "team", "tags": ["runbook"]}
 
 
 def test_context_add_many_rejects_invalid_records():

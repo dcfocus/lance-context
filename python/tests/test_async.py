@@ -119,6 +119,45 @@ async def test_search(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_metadata_filters(tmp_path: Path) -> None:
+    uri = str(tmp_path / "ctx.lance")
+    ctx = await AsyncContext.create(uri)
+
+    dim = 1536
+    near = [0.0] * dim
+    far = [0.0] * dim
+    far[0] = 10.0
+
+    await ctx.add(
+        "assistant",
+        "global nearest",
+        embedding=near,
+        metadata={"scope": "personal"},
+    )
+    await ctx.add(
+        "assistant",
+        "scoped farther",
+        embedding=far,
+        session_id="incident-1",
+        external_id="runbook-1",
+        metadata={"scope": "team", "tags": ["runbook"]},
+    )
+
+    entries = await ctx.list(filters={"scope": "team"})
+    assert len(entries) == 1
+    assert entries[0]["external_id"] == "runbook-1"
+    assert entries[0]["metadata"] == {"scope": "team", "tags": ["runbook"]}
+
+    results = await ctx.search(
+        near,
+        limit=1,
+        filters={"session_id": "incident-1", "tags": {"contains": "runbook"}},
+    )
+    assert len(results) == 1
+    assert results[0]["text"] == "scoped farther"
+
+
+@pytest.mark.asyncio
 async def test_repr(tmp_path: Path) -> None:
     uri = str(tmp_path / "ctx.lance")
     ctx = await AsyncContext.create(uri)

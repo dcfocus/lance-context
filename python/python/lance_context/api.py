@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import warnings
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -128,6 +129,7 @@ def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
         "embedding": raw.get("embedding"),
         "created_at": created_at,
         "state_metadata": raw.get("state_metadata"),
+        "metadata": raw.get("metadata"),
     }
 
 
@@ -145,6 +147,15 @@ _AWS_KWARG_MAP: dict[str, str] = {
     "region": "aws_region",
     "endpoint_url": "aws_endpoint_url",
 }
+
+
+def _json_dumps(value: dict[str, Any] | None, name: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be JSON-serializable") from exc
 
 
 def _merge_storage_options(
@@ -354,6 +365,7 @@ class Context:
         bot_id: str | None = None,
         session_id: str | None = None,
         external_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         if content_type is not None and data_type is not None:
             raise ValueError("Specify only one of content_type or data_type")
@@ -368,6 +380,7 @@ class Context:
             bot_id,
             session_id,
             external_id,
+            _json_dumps(metadata, "metadata"),
         )
 
     def add_many(self, records: Iterable[Mapping[str, Any]]) -> None:
@@ -375,7 +388,7 @@ class Context:
 
         Each record accepts the same fields as :meth:`add`: ``role``,
         ``content``, optional ``content_type``/``data_type``, ``embedding``,
-        ``bot_id``, ``session_id``, and ``external_id``.
+        ``bot_id``, ``session_id``, ``external_id``, and ``metadata``.
         """
         normalized: list[dict[str, Any]] = []
         for index, record in enumerate(records):
@@ -405,6 +418,7 @@ class Context:
                     "bot_id": record.get("bot_id"),
                     "session_id": record.get("session_id"),
                     "external_id": record.get("external_id"),
+                    "metadata_json": _json_dumps(record.get("metadata"), "metadata"),
                 }
             )
 
@@ -420,25 +434,36 @@ class Context:
     def checkout(self, version_id: int | str) -> None:
         self._inner.checkout(int(version_id))
 
-    def search(self, query: Any, limit: int | None = None) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: Any,
+        limit: int | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         vector = _coerce_vector(query)
-        results = self._inner.search(vector, limit)
+        results = self._inner.search(vector, limit, _json_dumps(filters, "filters"))
         return [_normalize_search_hit(item) for item in results]
 
     def list(
-        self, limit: int | None = None, offset: int | None = None
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Return stored entries.
 
         Args:
             limit: Maximum number of entries to return. If None, returns all.
             offset: Number of entries to skip before returning results.
+            filters: Optional equality filters for built-in fields
+                (bot_id, session_id, role, content_type), created_at range
+                filters, or metadata fields.
 
         Returns:
             List of entry dicts with keys: id, run_id, role, content_type,
-            text, binary, embedding, created_at, state_metadata.
+            text, binary, embedding, created_at, metadata, state_metadata.
         """
-        results = self._inner.list(limit, offset)
+        results = self._inner.list(limit, offset, _json_dumps(filters, "filters"))
         return [_normalize_record(item) for item in results]
 
     def get(
@@ -583,6 +608,8 @@ class AsyncContext:
         embedding: list[float] | None = None,
         bot_id: str | None = None,
         session_id: str | None = None,
+        external_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -595,6 +622,8 @@ class AsyncContext:
                 embedding=embedding,
                 bot_id=bot_id,
                 session_id=session_id,
+                external_id=external_id,
+                metadata=metadata,
             ),
         )
 
@@ -610,16 +639,26 @@ class AsyncContext:
         await loop.run_in_executor(None, lambda: self._sync.checkout(version_id))
 
     async def search(
-        self, query: Any, limit: int | None = None
+        self,
+        query: Any,
+        limit: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self._sync.search(query, limit))
+        return await loop.run_in_executor(
+            None, lambda: self._sync.search(query, limit, filters)
+        )
 
     async def list(
-        self, limit: int | None = None, offset: int | None = None
+        self,
+        limit: int | None = None,
+        offset: int | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self._sync.list(limit, offset))
+        return await loop.run_in_executor(
+            None, lambda: self._sync.list(limit, offset, filters)
+        )
 
     async def compact(
         self,
