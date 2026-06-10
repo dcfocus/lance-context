@@ -14,7 +14,8 @@ use tokio::runtime::Runtime;
 use lance_context::serde::CONTENT_TYPE_TEXT;
 use lance_context::{
     CompactionConfig, CompactionMetrics, CompactionStats, Context as RustContext, ContextRecord,
-    ContextStore, ContextStoreOptions, IdIndexType, MetadataFilter, RecordFilters, SearchResult,
+    ContextStore, ContextStoreOptions, IdIndexType, LifecycleQueryOptions, MetadataFilter,
+    RecordFilters, SearchResult, LIFECYCLE_ACTIVE,
 };
 
 const DEFAULT_BINARY_CONTENT_TYPE: &str = "application/octet-stream";
@@ -35,6 +36,18 @@ struct RecordInput {
     session_id: Option<String>,
     external_id: Option<String>,
     metadata_json: Option<String>,
+    lifecycle: LifecycleFields,
+}
+
+#[derive(Default)]
+struct LifecycleFields {
+    expires_at: Option<DateTime<Utc>>,
+    retention_policy: Option<String>,
+    lifecycle_status: Option<String>,
+    retired_at: Option<DateTime<Utc>>,
+    retired_reason: Option<String>,
+    supersedes_id: Option<String>,
+    superseded_by_id: Option<String>,
 }
 
 #[pyfunction]
@@ -285,7 +298,7 @@ impl Context {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (role, content, data_type = None, embedding = None, bot_id = None, session_id = None, external_id = None, metadata_json = None))]
+    #[pyo3(signature = (role, content, data_type = None, embedding = None, bot_id = None, session_id = None, external_id = None, metadata_json = None, expires_at = None, retention_policy = None, lifecycle_status = None, retired_at = None, retired_reason = None, supersedes_id = None, superseded_by_id = None))]
     fn add(
         &mut self,
         py: Python<'_>,
@@ -297,7 +310,23 @@ impl Context {
         session_id: Option<String>,
         external_id: Option<String>,
         metadata_json: Option<String>,
+        expires_at: Option<String>,
+        retention_policy: Option<String>,
+        lifecycle_status: Option<String>,
+        retired_at: Option<String>,
+        retired_reason: Option<String>,
+        supersedes_id: Option<String>,
+        superseded_by_id: Option<String>,
     ) -> PyResult<()> {
+        let lifecycle = LifecycleFields {
+            expires_at: parse_optional_datetime(expires_at, "expires_at")?,
+            retention_policy,
+            lifecycle_status,
+            retired_at: parse_optional_datetime(retired_at, "retired_at")?,
+            retired_reason,
+            supersedes_id,
+            superseded_by_id,
+        };
         let prepared = self.prepare_record(
             content,
             RecordInput {
@@ -308,6 +337,7 @@ impl Context {
                 session_id,
                 external_id,
                 metadata_json,
+                lifecycle,
             },
             1,
         )?;
@@ -373,18 +403,26 @@ impl Context {
         Ok(())
     }
 
-    #[pyo3(signature = (query, limit = None, filters_json = None))]
+    #[pyo3(signature = (query, limit = None, filters_json = None, include_expired = false, include_retired = false))]
     fn search(
         &self,
         py: Python<'_>,
         query: Vec<f32>,
         limit: Option<usize>,
         filters_json: Option<String>,
+        include_expired: bool,
+        include_retired: bool,
     ) -> PyResult<Vec<PyObject>> {
         let filters = filters_from_json(filters_json)?;
+        let options = LifecycleQueryOptions::new(include_expired, include_retired);
         let hits_res = py.allow_threads(|| {
             self.runtime
-                .block_on(self.store.search_filtered(&query, limit, filters.as_ref()))
+                .block_on(self.store.search_filtered_with_options(
+                    &query,
+                    limit,
+                    filters.as_ref(),
+                    options,
+                ))
         });
         let hits = hits_res.map_err(to_py_err)?;
         hits.into_iter()
@@ -392,19 +430,27 @@ impl Context {
             .collect()
     }
 
-    #[pyo3(signature = (limit = None, offset = None, filters_json = None))]
+    #[pyo3(signature = (limit = None, offset = None, filters_json = None, include_expired = false, include_retired = false))]
     fn list(
         &self,
         py: Python<'_>,
         limit: Option<usize>,
         offset: Option<usize>,
         filters_json: Option<String>,
+        include_expired: bool,
+        include_retired: bool,
     ) -> PyResult<Vec<PyObject>> {
         let filters = filters_from_json(filters_json)?;
+        let options = LifecycleQueryOptions::new(include_expired, include_retired);
         // Release GIL during data retrieval
         let records = py.allow_threads(|| {
             self.runtime
-                .block_on(self.store.list_filtered(limit, offset, filters.as_ref()))
+                .block_on(self.store.list_filtered_with_options(
+                    limit,
+                    offset,
+                    filters.as_ref(),
+                    options,
+                ))
                 .map_err(to_py_err)
         })?;
 
@@ -533,6 +579,28 @@ impl Context {
             optional_item(dict, "external_id")?.map(|value| value.extract::<String>());
         let metadata_json =
             optional_item(dict, "metadata_json")?.map(|value| value.extract::<String>());
+        let expires_at = optional_item(dict, "expires_at")?.map(|value| value.extract::<String>());
+        let retention_policy =
+            optional_item(dict, "retention_policy")?.map(|value| value.extract::<String>());
+        let lifecycle_status =
+            optional_item(dict, "lifecycle_status")?.map(|value| value.extract::<String>());
+        let retired_at = optional_item(dict, "retired_at")?.map(|value| value.extract::<String>());
+        let retired_reason =
+            optional_item(dict, "retired_reason")?.map(|value| value.extract::<String>());
+        let supersedes_id =
+            optional_item(dict, "supersedes_id")?.map(|value| value.extract::<String>());
+        let superseded_by_id =
+            optional_item(dict, "superseded_by_id")?.map(|value| value.extract::<String>());
+
+        let lifecycle = LifecycleFields {
+            expires_at: parse_optional_datetime(expires_at.transpose()?, "expires_at")?,
+            retention_policy: retention_policy.transpose()?,
+            lifecycle_status: lifecycle_status.transpose()?,
+            retired_at: parse_optional_datetime(retired_at.transpose()?, "retired_at")?,
+            retired_reason: retired_reason.transpose()?,
+            supersedes_id: supersedes_id.transpose()?,
+            superseded_by_id: superseded_by_id.transpose()?,
+        };
 
         self.prepare_record(
             &content,
@@ -544,6 +612,7 @@ impl Context {
                 session_id: session_id.transpose()?,
                 external_id: external_id.transpose()?,
                 metadata_json: metadata_json.transpose()?,
+                lifecycle,
             },
             index as u64 + 1,
         )
@@ -564,6 +633,7 @@ impl Context {
             session_id,
             external_id,
             metadata_json,
+            lifecycle,
         } = input;
 
         let (content_type, text_payload, binary_payload, inner_content) =
@@ -602,6 +672,15 @@ impl Context {
                 role: role.clone(),
                 state_metadata: None,
                 metadata,
+                expires_at: lifecycle.expires_at,
+                retention_policy: lifecycle.retention_policy,
+                lifecycle_status: lifecycle
+                    .lifecycle_status
+                    .unwrap_or_else(|| LIFECYCLE_ACTIVE.to_string()),
+                retired_at: lifecycle.retired_at,
+                retired_reason: lifecycle.retired_reason,
+                supersedes_id: lifecycle.supersedes_id,
+                superseded_by_id: lifecycle.superseded_by_id,
                 content_type,
                 text_payload,
                 binary_payload,
@@ -626,6 +705,23 @@ fn required_item<'py>(
 
 fn optional_item<'py>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     Ok(dict.get_item(key)?.filter(|value| !value.is_none()))
+}
+
+fn parse_optional_datetime(
+    value: Option<String>,
+    field_name: &str,
+) -> PyResult<Option<DateTime<Utc>>> {
+    value
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .map(|dt| dt.with_timezone(&Utc))
+                .map_err(|err| {
+                    PyTypeError::new_err(format!(
+                        "{field_name} must be an RFC3339 timestamp: {err}"
+                    ))
+                })
+        })
+        .transpose()
 }
 
 fn compaction_metrics_to_py(py: Python<'_>, metrics: CompactionMetrics) -> PyResult<PyObject> {
@@ -679,6 +775,13 @@ fn record_to_py(py: Python<'_>, record: ContextRecord) -> PyResult<PyObject> {
         role,
         state_metadata,
         metadata,
+        expires_at,
+        retention_policy,
+        lifecycle_status,
+        retired_at,
+        retired_reason,
+        supersedes_id,
+        superseded_by_id,
         content_type,
         text_payload,
         binary_payload,
@@ -714,6 +817,19 @@ fn record_to_py(py: Python<'_>, record: ContextRecord) -> PyResult<PyObject> {
         None => py.None().into_pyobject(py)?.unbind(),
     };
     dict.set_item("metadata", metadata_obj)?;
+    dict.set_item(
+        "expires_at",
+        expires_at.map(|dt| dt.to_rfc3339_opts(SecondsFormat::Micros, true)),
+    )?;
+    dict.set_item("retention_policy", retention_policy)?;
+    dict.set_item("lifecycle_status", lifecycle_status)?;
+    dict.set_item(
+        "retired_at",
+        retired_at.map(|dt| dt.to_rfc3339_opts(SecondsFormat::Micros, true)),
+    )?;
+    dict.set_item("retired_reason", retired_reason)?;
+    dict.set_item("supersedes_id", supersedes_id)?;
+    dict.set_item("superseded_by_id", superseded_by_id)?;
     dict.set_item("content_type", content_type)?;
     dict.set_item("text_payload", text_payload)?;
     match binary_payload {

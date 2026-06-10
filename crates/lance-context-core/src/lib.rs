@@ -7,7 +7,10 @@ pub mod serde;
 mod store;
 
 pub use context::{Context, ContextEntry, Snapshot};
-pub use record::{ContextRecord, MetadataFilter, RecordFilters, SearchResult, StateMetadata};
+pub use record::{
+    ContextRecord, LifecycleQueryOptions, MetadataFilter, RecordFilters, SearchResult,
+    StateMetadata, LIFECYCLE_ACTIVE, LIFECYCLE_CONTRADICTED,
+};
 pub use store::{
     CompactionConfig, CompactionStats, ContextStore, ContextStoreOptions, IdIndexType,
 };

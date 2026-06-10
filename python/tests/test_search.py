@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -14,9 +14,12 @@ from lance_context.api import (
 class DummyInner:
     def __init__(self) -> None:
         self.search_calls: list[tuple[list[float], int | None, str | None]] = []
+        self.search_lifecycle_calls: list[tuple[bool, bool]] = []
         self.list_calls: list[tuple[int | None, int | None, str | None]] = []
+        self.list_lifecycle_calls: list[tuple[bool, bool]] = []
         self.get_calls: list[tuple[str | None, str | None]] = []
         self.delete_calls: list[tuple[str | None, str | None]] = []
+        self.lifecycle_add_calls: list[dict[str, Any]] = []
         self.add_calls: list[
             tuple[
                 str,
@@ -41,6 +44,13 @@ class DummyInner:
         session_id: str | None,
         external_id: str | None,
         metadata_json: str | None,
+        expires_at: str | None = None,
+        retention_policy: str | None = None,
+        lifecycle_status: str | None = None,
+        retired_at: str | None = None,
+        retired_reason: str | None = None,
+        supersedes_id: str | None = None,
+        superseded_by_id: str | None = None,
     ):
         self.add_calls.append(
             (
@@ -54,6 +64,17 @@ class DummyInner:
                 metadata_json,
             )
         )
+        self.lifecycle_add_calls.append(
+            {
+                "expires_at": expires_at,
+                "retention_policy": retention_policy,
+                "lifecycle_status": lifecycle_status,
+                "retired_at": retired_at,
+                "retired_reason": retired_reason,
+                "supersedes_id": supersedes_id,
+                "superseded_by_id": superseded_by_id,
+            }
+        )
 
     def get(self, id: str | None, external_id: str | None):
         self.get_calls.append((id, external_id))
@@ -65,8 +86,16 @@ class DummyInner:
         self.delete_calls.append((id, external_id))
         return id == "rec-1" or external_id == "source-1"
 
-    def search(self, vector: list[float], limit: int | None, filters_json: str | None):
+    def search(
+        self,
+        vector: list[float],
+        limit: int | None,
+        filters_json: str | None,
+        include_expired: bool = False,
+        include_retired: bool = False,
+    ):
         self.search_calls.append((vector, limit, filters_json))
+        self.search_lifecycle_calls.append((include_expired, include_retired))
         return [
             {
                 "id": "rec-1",
@@ -83,14 +112,29 @@ class DummyInner:
                 "created_at": "2024-01-01T12:00:00Z",
                 "state_metadata": {"step": 1},
                 "metadata": {"scope": "team", "tags": ["runbook"]},
+                "expires_at": None,
+                "retention_policy": None,
+                "lifecycle_status": "active",
+                "retired_at": None,
+                "retired_reason": None,
+                "supersedes_id": None,
+                "superseded_by_id": None,
             }
         ]
 
     def add_many(self, records: list[dict[str, Any]]):
         self.add_many_calls.append(records)
 
-    def list(self, limit: int | None, offset: int | None, filters_json: str | None):
+    def list(
+        self,
+        limit: int | None,
+        offset: int | None,
+        filters_json: str | None,
+        include_expired: bool = False,
+        include_retired: bool = False,
+    ):
         self.list_calls.append((limit, offset, filters_json))
+        self.list_lifecycle_calls.append((include_expired, include_retired))
         return [
             {
                 "id": "rec-1",
@@ -106,6 +150,13 @@ class DummyInner:
                 "created_at": "2024-01-01T12:00:00Z",
                 "state_metadata": {"step": 1},
                 "metadata": {"scope": "team", "tags": ["runbook"]},
+                "expires_at": None,
+                "retention_policy": None,
+                "lifecycle_status": "active",
+                "retired_at": None,
+                "retired_reason": None,
+                "supersedes_id": None,
+                "superseded_by_id": None,
             },
             {
                 "id": "rec-2",
@@ -121,6 +172,13 @@ class DummyInner:
                 "created_at": "2024-01-02T12:00:00Z",
                 "state_metadata": None,
                 "metadata": None,
+                "expires_at": None,
+                "retention_policy": None,
+                "lifecycle_status": "active",
+                "retired_at": None,
+                "retired_reason": None,
+                "supersedes_id": None,
+                "superseded_by_id": None,
             },
         ]
 
@@ -183,6 +241,16 @@ def test_context_search_forwards_filters():
     filters_json = dummy.search_calls[0][2]
     assert filters_json is not None
     assert json.loads(filters_json) == {"bot_id": "support_bot", "scope": "team"}
+
+
+def test_context_search_passes_lifecycle_flags():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.search([0.5, 0.4], include_expired=True, include_retired=True)
+
+    assert dummy.search_lifecycle_calls == [(True, True)]
 
 
 def test_normalize_record_without_distance():
@@ -337,6 +405,16 @@ def test_context_list_forwards_filters():
         "role": "user",
         "tags": {"contains": "runbook"},
     }
+
+
+def test_context_list_passes_lifecycle_flags():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.list(include_expired=True, include_retired=True)
+
+    assert dummy.list_lifecycle_calls == [(True, True)]
 
 
 def test_context_add_with_embedding():
@@ -548,6 +626,47 @@ def test_context_add_rejects_non_json_metadata():
         ctx.add("user", "hello", metadata={"bad": object()})
 
 
+def test_context_add_with_lifecycle_fields():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    expires_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    retired_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    ctx.add(
+        "user",
+        "hello",
+        expires_at=expires_at,
+        retention_policy="ttl:30d",
+        lifecycle_status="active",
+        retired_at=retired_at,
+        retired_reason="manual cleanup",
+        supersedes_id="old-id",
+        superseded_by_id="new-id",
+    )
+
+    assert dummy.lifecycle_add_calls == [
+        {
+            "expires_at": "2026-07-01T00:00:00Z",
+            "retention_policy": "ttl:30d",
+            "lifecycle_status": "active",
+            "retired_at": "2026-08-01T00:00:00Z",
+            "retired_reason": "manual cleanup",
+            "supersedes_id": "old-id",
+            "superseded_by_id": "new-id",
+        }
+    ]
+
+
+def test_context_add_rejects_naive_lifecycle_datetime():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    with pytest.raises(ValueError, match="timezone"):
+        ctx.add("user", "hello", expires_at=datetime(2026, 7, 1))
+
+
 def test_context_add_many_normalizes_records():
     ctx = Context.__new__(Context)
     dummy = DummyInner()
@@ -579,6 +698,13 @@ def test_context_add_many_normalizes_records():
                 "session_id": None,
                 "external_id": None,
                 "metadata_json": None,
+                "expires_at": None,
+                "retention_policy": None,
+                "lifecycle_status": None,
+                "retired_at": None,
+                "retired_reason": None,
+                "supersedes_id": None,
+                "superseded_by_id": None,
             },
             {
                 "role": "assistant",
@@ -589,6 +715,13 @@ def test_context_add_many_normalizes_records():
                 "session_id": "sess",
                 "external_id": "doc-1#chunk-2",
                 "metadata_json": None,
+                "expires_at": None,
+                "retention_policy": None,
+                "lifecycle_status": None,
+                "retired_at": None,
+                "retired_reason": None,
+                "supersedes_id": None,
+                "superseded_by_id": None,
             },
         ]
     ]
@@ -622,6 +755,31 @@ def test_context_add_many_forwards_metadata():
     metadata_json = dummy.add_many_calls[0][0]["metadata_json"]
     assert metadata_json is not None
     assert json.loads(metadata_json) == {"scope": "team", "tags": ["runbook"]}
+
+
+def test_context_add_many_passes_lifecycle_fields():
+    ctx = Context.__new__(Context)
+    dummy = DummyInner()
+    ctx._inner = dummy  # type: ignore[attr-defined]
+
+    ctx.add_many(
+        [
+            {
+                "role": "user",
+                "content": "hello",
+                "expires_at": datetime(2026, 7, 1, tzinfo=timezone.utc),
+                "retention_policy": "ttl:30d",
+                "lifecycle_status": "superseded",
+                "superseded_by_id": "new-id",
+            }
+        ]
+    )
+
+    record = dummy.add_many_calls[0][0]
+    assert record["expires_at"] == "2026-07-01T00:00:00Z"
+    assert record["retention_policy"] == "ttl:30d"
+    assert record["lifecycle_status"] == "superseded"
+    assert record["superseded_by_id"] == "new-id"
 
 
 def test_context_add_many_rejects_invalid_records():
@@ -668,3 +826,35 @@ def test_normalize_record_with_agent_and_session_id():
     assert result["bot_id"] == "support_bot"
     assert result["session_id"] == "user_88"
     assert result["external_id"] == "source-1"
+
+
+def test_normalize_record_with_lifecycle_fields():
+    result = _normalize_record(
+        {
+            "id": "rec-1",
+            "external_id": None,
+            "created_at": "2024-01-01T00:00:00Z",
+            "content_type": "text/plain",
+            "text_payload": "hello",
+            "binary_payload": None,
+            "embedding": None,
+            "run_id": "run-1",
+            "role": "user",
+            "state_metadata": None,
+            "metadata": None,
+            "expires_at": "2026-07-01T00:00:00Z",
+            "retention_policy": "ttl:30d",
+            "lifecycle_status": "superseded",
+            "retired_at": "2026-08-01T00:00:00Z",
+            "retired_reason": "manual cleanup",
+            "supersedes_id": "old-id",
+            "superseded_by_id": "new-id",
+        }
+    )
+
+    assert isinstance(result["expires_at"], datetime)
+    assert isinstance(result["retired_at"], datetime)
+    assert result["lifecycle_status"] == "superseded"
+    assert result["retention_policy"] == "ttl:30d"
+    assert result["supersedes_id"] == "old-id"
+    assert result["superseded_by_id"] == "new-id"

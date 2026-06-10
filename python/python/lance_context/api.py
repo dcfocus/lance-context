@@ -111,11 +111,26 @@ def _coerce_vector(query: Any) -> list[float]:
     raise TypeError("search query must be a sequence of floats")
 
 
+def _coerce_timestamp(value: datetime | str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError(f"{field_name} must include timezone information")
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"{field_name} must be a datetime, RFC3339 string, or None")
+
+
+def _normalize_timestamp(value: Any) -> Any:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
+
+
 def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
     """Normalize a raw record dict from the Rust layer."""
-    created_at = raw.get("created_at")
-    if isinstance(created_at, str):
-        created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     return {
         "id": raw.get("id"),
         "external_id": raw.get("external_id"),
@@ -127,9 +142,16 @@ def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
         "text": raw.get("text_payload"),
         "binary": raw.get("binary_payload"),
         "embedding": raw.get("embedding"),
-        "created_at": created_at,
+        "created_at": _normalize_timestamp(raw.get("created_at")),
         "state_metadata": raw.get("state_metadata"),
         "metadata": raw.get("metadata"),
+        "expires_at": _normalize_timestamp(raw.get("expires_at")),
+        "retention_policy": raw.get("retention_policy"),
+        "lifecycle_status": raw.get("lifecycle_status"),
+        "retired_at": _normalize_timestamp(raw.get("retired_at")),
+        "retired_reason": raw.get("retired_reason"),
+        "supersedes_id": raw.get("supersedes_id"),
+        "superseded_by_id": raw.get("superseded_by_id"),
     }
 
 
@@ -366,6 +388,13 @@ class Context:
         session_id: str | None = None,
         external_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        expires_at: datetime | str | None = None,
+        retention_policy: str | None = None,
+        lifecycle_status: str | None = None,
+        retired_at: datetime | str | None = None,
+        retired_reason: str | None = None,
+        supersedes_id: str | None = None,
+        superseded_by_id: str | None = None,
     ) -> None:
         if content_type is not None and data_type is not None:
             raise ValueError("Specify only one of content_type or data_type")
@@ -381,6 +410,13 @@ class Context:
             session_id,
             external_id,
             _json_dumps(metadata, "metadata"),
+            _coerce_timestamp(expires_at, field_name="expires_at"),
+            retention_policy,
+            lifecycle_status,
+            _coerce_timestamp(retired_at, field_name="retired_at"),
+            retired_reason,
+            supersedes_id,
+            superseded_by_id,
         )
 
     def add_many(self, records: Iterable[Mapping[str, Any]]) -> None:
@@ -388,7 +424,8 @@ class Context:
 
         Each record accepts the same fields as :meth:`add`: ``role``,
         ``content``, optional ``content_type``/``data_type``, ``embedding``,
-        ``bot_id``, ``session_id``, ``external_id``, and ``metadata``.
+        ``bot_id``, ``session_id``, ``external_id``, ``metadata``, and
+        lifecycle fields such as ``expires_at`` and ``lifecycle_status``.
         """
         normalized: list[dict[str, Any]] = []
         for index, record in enumerate(records):
@@ -419,6 +456,19 @@ class Context:
                     "session_id": record.get("session_id"),
                     "external_id": record.get("external_id"),
                     "metadata_json": _json_dumps(record.get("metadata"), "metadata"),
+                    "expires_at": _coerce_timestamp(
+                        record.get("expires_at"),
+                        field_name=f"records[{index}].expires_at",
+                    ),
+                    "retention_policy": record.get("retention_policy"),
+                    "lifecycle_status": record.get("lifecycle_status"),
+                    "retired_at": _coerce_timestamp(
+                        record.get("retired_at"),
+                        field_name=f"records[{index}].retired_at",
+                    ),
+                    "retired_reason": record.get("retired_reason"),
+                    "supersedes_id": record.get("supersedes_id"),
+                    "superseded_by_id": record.get("superseded_by_id"),
                 }
             )
 
@@ -439,9 +489,18 @@ class Context:
         query: Any,
         limit: int | None = None,
         filters: dict[str, Any] | None = None,
+        *,
+        include_expired: bool = False,
+        include_retired: bool = False,
     ) -> list[dict[str, Any]]:
         vector = _coerce_vector(query)
-        results = self._inner.search(vector, limit, _json_dumps(filters, "filters"))
+        results = self._inner.search(
+            vector,
+            limit,
+            _json_dumps(filters, "filters"),
+            include_expired,
+            include_retired,
+        )
         return [_normalize_search_hit(item) for item in results]
 
     def list(
@@ -449,6 +508,9 @@ class Context:
         limit: int | None = None,
         offset: int | None = None,
         filters: dict[str, Any] | None = None,
+        *,
+        include_expired: bool = False,
+        include_retired: bool = False,
     ) -> list[dict[str, Any]]:
         """Return stored entries.
 
@@ -458,12 +520,21 @@ class Context:
             filters: Optional equality filters for built-in fields
                 (bot_id, session_id, role, content_type), created_at range
                 filters, or metadata fields.
+            include_expired: Include records whose ``expires_at`` is in the past.
+            include_retired: Include retired/superseded/revoked records.
 
         Returns:
             List of entry dicts with keys: id, run_id, role, content_type,
-            text, binary, embedding, created_at, metadata, state_metadata.
+            text, binary, embedding, created_at, metadata, state_metadata, and
+            lifecycle metadata.
         """
-        results = self._inner.list(limit, offset, _json_dumps(filters, "filters"))
+        results = self._inner.list(
+            limit,
+            offset,
+            _json_dumps(filters, "filters"),
+            include_expired,
+            include_retired,
+        )
         return [_normalize_record(item) for item in results]
 
     def get(
@@ -610,6 +681,13 @@ class AsyncContext:
         session_id: str | None = None,
         external_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        expires_at: datetime | str | None = None,
+        retention_policy: str | None = None,
+        lifecycle_status: str | None = None,
+        retired_at: datetime | str | None = None,
+        retired_reason: str | None = None,
+        supersedes_id: str | None = None,
+        superseded_by_id: str | None = None,
     ) -> None:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -624,6 +702,13 @@ class AsyncContext:
                 session_id=session_id,
                 external_id=external_id,
                 metadata=metadata,
+                expires_at=expires_at,
+                retention_policy=retention_policy,
+                lifecycle_status=lifecycle_status,
+                retired_at=retired_at,
+                retired_reason=retired_reason,
+                supersedes_id=supersedes_id,
+                superseded_by_id=superseded_by_id,
             ),
         )
 
@@ -643,10 +728,20 @@ class AsyncContext:
         query: Any,
         limit: int | None = None,
         filters: dict[str, Any] | None = None,
+        *,
+        include_expired: bool = False,
+        include_retired: bool = False,
     ) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, lambda: self._sync.search(query, limit, filters)
+            None,
+            lambda: self._sync.search(
+                query,
+                limit,
+                filters,
+                include_expired=include_expired,
+                include_retired=include_retired,
+            ),
         )
 
     async def list(
@@ -654,10 +749,20 @@ class AsyncContext:
         limit: int | None = None,
         offset: int | None = None,
         filters: dict[str, Any] | None = None,
+        *,
+        include_expired: bool = False,
+        include_retired: bool = False,
     ) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, lambda: self._sync.list(limit, offset, filters)
+            None,
+            lambda: self._sync.list(
+                limit,
+                offset,
+                filters,
+                include_expired=include_expired,
+                include_retired=include_retired,
+            ),
         )
 
     async def compact(
