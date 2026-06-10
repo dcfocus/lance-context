@@ -5369,7 +5369,7 @@ dependencies = [
 
 [[package]]
 name = "lance-context"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "lance-context-api",
  "lance-context-client",
@@ -5400,7 +5400,7 @@ dependencies = [
 
 [[package]]
 name = "lance-context-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "arrow-array 58.3.0",
  "arrow-ipc 58.3.0",
@@ -5423,7 +5423,7 @@ dependencies = [
 
 [[package]]
 name = "lance-context-python"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "lance-context-core",
