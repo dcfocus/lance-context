@@ -19,53 +19,113 @@ on:
           - release
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  build:
+    name: build-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     permissions:
-      id-token: write
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            target: x86_64
+            manylinux: "2_28"
+            wheel-pattern: "*manylinux_2_28_x86_64.whl"
+            extra-args: "--sdist"
+          - name: linux-aarch64
+            os: ubuntu-24.04
+            target: aarch64
+            manylinux: "2_28"
+            wheel-pattern: "*manylinux_2_28_aarch64.whl"
+            extra-args: ""
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            wheel-pattern: "*macosx_11_0_arm64.whl"
+            extra-args: ""
     env:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: "-C debuginfo=1"
       RUST_BACKTRACE: "1"
       CARGO_INCREMENTAL: "0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install protobuf
+
+      - name: Build Linux distributions
+        if: runner.os == 'Linux'
+        uses: PyO3/maturin-action@v1
         with:
-          python-version: "3.11"
+          command: build
+          args: --release --out dist ${{ matrix.extra-args }}
+          working-directory: python
+          manylinux: ${{ matrix.manylinux }}
+          target: ${{ matrix.target }}
+          rust-toolchain: stable
+          before-script-linux: |
+            if command -v yum >/dev/null 2>&1; then
+              yum install -y curl make openssl-devel perl
+            elif command -v apt-get >/dev/null 2>&1; then
+              apt-get update
+              apt-get install -y curl libssl-dev ca-certificates make perl
+            fi
+            PROTOC_VERSION=25.6
+            curl -LsS -o /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+            python3 - <<'PY'
+            from zipfile import ZipFile
+            ZipFile("/tmp/protoc.zip").extractall("/tmp/protoc")
+            PY
+            install -m 0755 /tmp/protoc/bin/protoc /usr/local/bin/protoc
+            cp -R /tmp/protoc/include/* /usr/local/include/
+            protoc --version
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build macOS distributions
+        if: runner.os == 'macOS'
+        uses: PyO3/maturin-action@v1
         with:
-          toolchain: stable
-          cache: false
+          command: build
+          args: --release --out dist ${{ matrix.extra-args }}
+          working-directory: python
+          target: ${{ matrix.target }}
+          rust-toolchain: stable
 
-      - name: Install system dependencies
+      - name: Verify wheel tag
         run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install maturin
-        run: |
-          pip install maturin
-
-      - name: Build distributions
-        working-directory: python
-        run: |
-          maturin build --release --out dist --sdist
+          ls python/dist/${{ matrix.wheel-pattern }}
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
-          name: python-dist
+          name: python-dist-${{ matrix.name }}
           path: python/dist
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-dist-*
+          path: python/dist
+          merge-multiple: true
 
       - name: Publish to PyPI
         if: >
