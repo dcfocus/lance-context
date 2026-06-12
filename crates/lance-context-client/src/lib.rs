@@ -58,6 +58,32 @@ impl ContextStoreApi for RemoteContextStore {
         Ok(resp)
     }
 
+    async fn upsert(
+        &mut self,
+        request: &UpsertRecordRequest,
+    ) -> ContextResult<UpsertRecordResponse> {
+        let resp = self
+            .client
+            .upsert_record(&self.context_name, request)
+            .await
+            .map_err(to_ctx_err)?;
+        self.cached_version = resp.version;
+        Ok(resp)
+    }
+
+    async fn update(
+        &mut self,
+        request: &UpdateRecordRequest,
+    ) -> ContextResult<UpdateRecordResponse> {
+        let resp = self
+            .client
+            .update_record(&self.context_name, request)
+            .await
+            .map_err(to_ctx_err)?;
+        self.cached_version = resp.version;
+        Ok(resp)
+    }
+
     async fn get(&self, id: &str) -> ContextResult<Option<RecordDto>> {
         let resp = self
             .client
@@ -286,6 +312,34 @@ impl ContextClient {
         let resp = self
             .http
             .post(self.url(&format!("/contexts/{}/records", name)))
+            .json(req)
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn upsert_record(
+        &self,
+        name: &str,
+        req: &UpsertRecordRequest,
+    ) -> Result<UpsertRecordResponse, ClientError> {
+        let resp = self
+            .http
+            .put(self.url(&format!("/contexts/{}/records", name)))
+            .json(req)
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn update_record(
+        &self,
+        name: &str,
+        req: &UpdateRecordRequest,
+    ) -> Result<UpdateRecordResponse, ClientError> {
+        let resp = self
+            .http
+            .patch(self.url(&format!("/contexts/{}/records", name)))
             .json(req)
             .send()
             .await?;

@@ -15,7 +15,7 @@ use lance_context_core::serde::CONTENT_TYPE_TEXT;
 use lance_context_core::{
     CompactionConfig, CompactionMetrics, CompactionStats, Context as RustContext, ContextRecord,
     ContextStore, ContextStoreOptions, DistanceMetric, IdIndexType, LifecycleQueryOptions,
-    RecordFilters, Relationship, RetrieveResult, SearchResult, LIFECYCLE_ACTIVE,
+    RecordFilters, RecordPatch, Relationship, RetrieveResult, SearchResult, LIFECYCLE_ACTIVE,
 };
 
 const DEFAULT_BINARY_CONTENT_TYPE: &str = "application/octet-stream";
@@ -296,6 +296,154 @@ impl Context {
             prepared.data_type.as_deref(),
         );
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (role, content, data_type = None, embedding = None, bot_id = None, session_id = None, external_id = None, metadata_json = None, expires_at = None, retention_policy = None, lifecycle_status = None, retired_at = None, retired_reason = None, relationships_json = None, key = "external_id"))]
+    fn upsert(
+        &mut self,
+        py: Python<'_>,
+        role: &str,
+        content: &Bound<'_, PyAny>,
+        data_type: Option<&str>,
+        embedding: Option<Vec<f32>>,
+        bot_id: Option<String>,
+        session_id: Option<String>,
+        external_id: Option<String>,
+        metadata_json: Option<String>,
+        expires_at: Option<String>,
+        retention_policy: Option<String>,
+        lifecycle_status: Option<String>,
+        retired_at: Option<String>,
+        retired_reason: Option<String>,
+        relationships_json: Option<String>,
+        key: &str,
+    ) -> PyResult<PyObject> {
+        if key != "external_id" {
+            return Err(PyRuntimeError::new_err(format!(
+                "upsert key '{key}' is not supported; use 'external_id'"
+            )));
+        }
+        if external_id.as_deref().is_none_or(str::is_empty) {
+            return Err(PyRuntimeError::new_err(
+                "upsert requires external_id".to_string(),
+            ));
+        }
+
+        let lifecycle = LifecycleFields {
+            expires_at: parse_optional_datetime(expires_at, "expires_at")?,
+            retention_policy,
+            lifecycle_status,
+            retired_at: parse_optional_datetime(retired_at, "retired_at")?,
+            retired_reason,
+            supersedes_id: None,
+            superseded_by_id: None,
+        };
+        let prepared = self.prepare_record(
+            content,
+            RecordInput {
+                role: role.to_string(),
+                data_type: data_type.map(str::to_string),
+                embedding,
+                bot_id,
+                session_id,
+                external_id,
+                metadata_json,
+                relationships: relationships_from_json(relationships_json)?,
+                lifecycle,
+            },
+            1,
+        )?;
+
+        let result = py.allow_threads(|| {
+            self.runtime
+                .block_on(self.store.upsert_by_external_id(prepared.record.clone()))
+        });
+        let result = result.map_err(to_py_err)?;
+        self.inner.add(
+            &prepared.role,
+            &prepared.inner_content,
+            prepared.data_type.as_deref(),
+        );
+
+        let dict = PyDict::new(py);
+        dict.set_item("inserted", result.inserted)?;
+        dict.set_item("replaced_id", result.replaced_id)?;
+        dict.set_item("version", result.version)?;
+        dict.set_item("record", record_to_py(py, result.record)?)?;
+        Ok(dict.into_pyobject(py)?.unbind().into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (id = None, external_id = None, bot_id = None, session_id = None, metadata_json = None, relationships_json = None, expires_at = None, retention_policy = None, lifecycle_status = None, retired_at = None, retired_reason = None))]
+    fn update(
+        &mut self,
+        py: Python<'_>,
+        id: Option<String>,
+        external_id: Option<String>,
+        bot_id: Option<String>,
+        session_id: Option<String>,
+        metadata_json: Option<String>,
+        relationships_json: Option<String>,
+        expires_at: Option<String>,
+        retention_policy: Option<String>,
+        lifecycle_status: Option<String>,
+        retired_at: Option<String>,
+        retired_reason: Option<String>,
+    ) -> PyResult<PyObject> {
+        let patch = RecordPatch {
+            bot_id,
+            session_id,
+            state_metadata: None,
+            metadata: metadata_from_json(metadata_json)?,
+            relationships: relationships_patch_from_json(relationships_json)?,
+            expires_at: parse_optional_datetime(expires_at, "expires_at")?,
+            retention_policy,
+            lifecycle_status,
+            retired_at: parse_optional_datetime(retired_at, "retired_at")?,
+            retired_reason,
+        };
+        if patch.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "update requires at least one patch field",
+            ));
+        }
+
+        let result = match (id, external_id) {
+            (Some(id), None) => py.allow_threads(|| {
+                self.runtime
+                    .block_on(self.store.update_by_id(&id, patch))
+                    .map_err(to_py_err)
+            }),
+            (None, Some(external_id)) => py.allow_threads(|| {
+                self.runtime
+                    .block_on(self.store.update_by_external_id(&external_id, patch))
+                    .map_err(to_py_err)
+            }),
+            (None, None) => Err(PyRuntimeError::new_err(
+                "update() requires either id or external_id",
+            )),
+            (Some(_), Some(_)) => Err(PyRuntimeError::new_err(
+                "update() accepts only one of id or external_id",
+            )),
+        }?;
+
+        let dict = PyDict::new(py);
+        match result {
+            Some(result) => {
+                dict.set_item("updated", true)?;
+                dict.set_item("replaced_id", Some(result.replaced_id))?;
+                dict.set_item("version", result.version)?;
+                dict.set_item("record", record_to_py(py, result.record)?)?;
+            }
+            None => {
+                dict.set_item("updated", false)?;
+                dict.set_item("replaced_id", Option::<String>::None)?;
+                dict.set_item("version", self.store.version())?;
+                dict.set_item("record", Option::<PyObject>::None)?;
+            }
+        }
+        Ok(dict.into_pyobject(py)?.unbind().into())
     }
 
     #[pyo3(signature = (records))]
@@ -727,6 +875,12 @@ fn required_item<'py>(
 
 fn optional_item<'py>(dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
     Ok(dict.get_item(key)?.filter(|value| !value.is_none()))
+}
+
+fn relationships_patch_from_json(value: Option<String>) -> PyResult<Option<Vec<Relationship>>> {
+    value
+        .map(|value| relationships_from_json(Some(value)))
+        .transpose()
 }
 
 fn parse_optional_datetime(

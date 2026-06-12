@@ -34,6 +34,16 @@ pub trait ContextStoreApi {
         records: &[AddRecordRequest],
     ) -> impl Future<Output = ContextResult<AddRecordsResponse>> + Send;
 
+    fn upsert(
+        &mut self,
+        request: &UpsertRecordRequest,
+    ) -> impl Future<Output = ContextResult<UpsertRecordResponse>> + Send;
+
+    fn update(
+        &mut self,
+        request: &UpdateRecordRequest,
+    ) -> impl Future<Output = ContextResult<UpdateRecordResponse>> + Send;
+
     fn get(&self, id: &str) -> impl Future<Output = ContextResult<Option<RecordDto>>> + Send;
 
     fn get_by_external_id(
@@ -192,6 +202,82 @@ pub struct AddRecordsResponse {
     pub version: u64,
     pub ids: Vec<String>,
     pub count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpsertRecordRequest {
+    pub record: AddRecordRequest,
+    #[serde(default = "default_upsert_key")]
+    pub key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpsertRecordResponse {
+    pub version: u64,
+    pub inserted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_id: Option<String>,
+    pub record: RecordDto,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecordPatchDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_metadata: Option<StateMetadataDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationships: Option<Vec<RelationshipDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_reason: Option<String>,
+}
+
+impl RecordPatchDto {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bot_id.is_none()
+            && self.session_id.is_none()
+            && self.state_metadata.is_none()
+            && self.metadata.is_none()
+            && self.relationships.is_none()
+            && self.expires_at.is_none()
+            && self.retention_policy.is_none()
+            && self.lifecycle_status.is_none()
+            && self.retired_at.is_none()
+            && self.retired_reason.is_none()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateRecordRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub patch: RecordPatchDto,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateRecordResponse {
+    pub version: u64,
+    pub updated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<RecordDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,6 +480,10 @@ fn default_content_type() -> String {
 
 fn default_role() -> String {
     "user".to_string()
+}
+
+fn default_upsert_key() -> String {
+    "external_id".to_string()
 }
 
 fn default_search_limit() -> usize {

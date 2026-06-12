@@ -3,12 +3,13 @@ use uuid::Uuid;
 
 use lance_context_api::{
     AddRecordRequest, AddRecordsResponse, CompactRequest, CompactResponse, CompactStatsResponse,
-    ContextError, ContextResult, ContextStoreApi, DeleteRecordResponse, RecordDto, RelationshipDto,
-    RetrieveRequest, RetrieveResultDto, SearchResultDto, StateMetadataDto,
+    ContextError, ContextResult, ContextStoreApi, DeleteRecordResponse, RecordDto, RecordPatchDto,
+    RelationshipDto, RetrieveRequest, RetrieveResultDto, SearchResultDto, StateMetadataDto,
+    UpdateRecordRequest, UpdateRecordResponse, UpsertRecordRequest, UpsertRecordResponse,
 };
 
 use crate::record::{
-    ContextRecord, LifecycleQueryOptions, RecordFilters, Relationship, StateMetadata,
+    ContextRecord, LifecycleQueryOptions, RecordFilters, RecordPatch, Relationship, StateMetadata,
     LIFECYCLE_ACTIVE,
 };
 use crate::store::{CompactionConfig, ContextStore};
@@ -22,39 +23,7 @@ impl ContextStoreApi for ContextStore {
         for r in records {
             let id = Uuid::new_v4().to_string();
             ids.push(id.clone());
-            core_records.push(ContextRecord {
-                id,
-                external_id: r.external_id.clone(),
-                run_id: run_id.clone(),
-                bot_id: r.bot_id.clone(),
-                session_id: r.session_id.clone(),
-                created_at: Utc::now(),
-                role: r.role.clone(),
-                state_metadata: r.state_metadata.as_ref().map(|sm| StateMetadata {
-                    step: sm.step,
-                    active_plan_id: sm.active_plan_id.clone(),
-                    tokens_used: sm.tokens_used,
-                    custom: sm.custom.clone(),
-                }),
-                metadata: r.metadata.clone(),
-                relationships: r
-                    .relationships
-                    .iter()
-                    .cloned()
-                    .map(dto_to_relationship)
-                    .collect(),
-                expires_at: r.expires_at,
-                retention_policy: r.retention_policy.clone(),
-                lifecycle_status: LIFECYCLE_ACTIVE.to_string(),
-                retired_at: None,
-                retired_reason: None,
-                supersedes_id: r.supersedes_id.clone(),
-                superseded_by_id: None,
-                content_type: r.content_type.clone(),
-                text_payload: r.text_payload.clone(),
-                binary_payload: r.binary_payload.clone(),
-                embedding: r.embedding.clone(),
-            });
+            core_records.push(record_from_add_request(r, id, run_id.clone()));
         }
 
         let count = core_records.len();
@@ -63,6 +32,88 @@ impl ContextStoreApi for ContextStore {
             version,
             ids,
             count,
+        })
+    }
+
+    async fn upsert(
+        &mut self,
+        request: &UpsertRecordRequest,
+    ) -> ContextResult<UpsertRecordResponse> {
+        if request.key != "external_id" {
+            return Err(ContextError::InvalidRequest(format!(
+                "upsert key '{}' is not supported; use 'external_id'",
+                request.key
+            )));
+        }
+        if request
+            .record
+            .external_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(ContextError::InvalidRequest(
+                "upsert requires record.external_id".to_string(),
+            ));
+        }
+
+        let record = record_from_add_request(
+            &request.record,
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+        );
+        let result = ContextStore::upsert_by_external_id(self, record)
+            .await
+            .map_err(to_ctx_err)?;
+        Ok(UpsertRecordResponse {
+            version: result.version,
+            inserted: result.inserted,
+            replaced_id: result.replaced_id,
+            record: record_to_dto(result.record),
+        })
+    }
+
+    async fn update(
+        &mut self,
+        request: &UpdateRecordRequest,
+    ) -> ContextResult<UpdateRecordResponse> {
+        if request.patch.is_empty() {
+            return Err(ContextError::InvalidRequest(
+                "update requires at least one patch field".to_string(),
+            ));
+        }
+
+        let patch = patch_from_dto(&request.patch);
+        let result = match (&request.id, &request.external_id) {
+            (Some(id), None) => ContextStore::update_by_id(self, id, patch).await,
+            (None, Some(external_id)) => {
+                ContextStore::update_by_external_id(self, external_id, patch).await
+            }
+            (None, None) => {
+                return Err(ContextError::InvalidRequest(
+                    "update requires either id or external_id".to_string(),
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(ContextError::InvalidRequest(
+                    "update accepts only one of id or external_id".to_string(),
+                ));
+            }
+        }
+        .map_err(to_ctx_err)?;
+
+        Ok(match result {
+            Some(result) => UpdateRecordResponse {
+                version: result.version,
+                updated: true,
+                replaced_id: Some(result.replaced_id),
+                record: Some(record_to_dto(result.record)),
+            },
+            None => UpdateRecordResponse {
+                version: ContextStore::version(self),
+                updated: false,
+                replaced_id: None,
+                record: None,
+            },
         })
     }
 
@@ -253,6 +304,68 @@ fn relationship_to_dto(r: Relationship) -> RelationshipDto {
         target_id: r.target_id,
         relation: r.relation,
         weight: r.weight,
+    }
+}
+
+fn patch_from_dto(patch: &RecordPatchDto) -> RecordPatch {
+    RecordPatch {
+        bot_id: patch.bot_id.clone(),
+        session_id: patch.session_id.clone(),
+        state_metadata: patch.state_metadata.as_ref().map(|sm| StateMetadata {
+            step: sm.step,
+            active_plan_id: sm.active_plan_id.clone(),
+            tokens_used: sm.tokens_used,
+            custom: sm.custom.clone(),
+        }),
+        metadata: patch.metadata.clone(),
+        relationships: patch.relationships.as_ref().map(|relationships| {
+            relationships
+                .iter()
+                .cloned()
+                .map(dto_to_relationship)
+                .collect()
+        }),
+        expires_at: patch.expires_at,
+        retention_policy: patch.retention_policy.clone(),
+        lifecycle_status: patch.lifecycle_status.clone(),
+        retired_at: patch.retired_at,
+        retired_reason: patch.retired_reason.clone(),
+    }
+}
+
+fn record_from_add_request(r: &AddRecordRequest, id: String, run_id: String) -> ContextRecord {
+    ContextRecord {
+        id,
+        external_id: r.external_id.clone(),
+        run_id,
+        bot_id: r.bot_id.clone(),
+        session_id: r.session_id.clone(),
+        created_at: Utc::now(),
+        role: r.role.clone(),
+        state_metadata: r.state_metadata.as_ref().map(|sm| StateMetadata {
+            step: sm.step,
+            active_plan_id: sm.active_plan_id.clone(),
+            tokens_used: sm.tokens_used,
+            custom: sm.custom.clone(),
+        }),
+        metadata: r.metadata.clone(),
+        relationships: r
+            .relationships
+            .iter()
+            .cloned()
+            .map(dto_to_relationship)
+            .collect(),
+        expires_at: r.expires_at,
+        retention_policy: r.retention_policy.clone(),
+        lifecycle_status: LIFECYCLE_ACTIVE.to_string(),
+        retired_at: None,
+        retired_reason: None,
+        supersedes_id: r.supersedes_id.clone(),
+        superseded_by_id: None,
+        content_type: r.content_type.clone(),
+        text_payload: r.text_payload.clone(),
+        binary_payload: r.binary_payload.clone(),
+        embedding: r.embedding.clone(),
     }
 }
 
