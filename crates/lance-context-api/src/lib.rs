@@ -178,6 +178,10 @@ pub struct AddRecordRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_metadata: Option<StateMetadataDto>,
@@ -228,6 +232,10 @@ pub struct RecordPatchDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_metadata: Option<StateMetadataDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -252,6 +260,8 @@ impl RecordPatchDto {
     pub fn is_empty(&self) -> bool {
         self.bot_id.is_none()
             && self.session_id.is_none()
+            && self.tenant.is_none()
+            && self.source.is_none()
             && self.state_metadata.is_none()
             && self.metadata.is_none()
             && self.relationships.is_none()
@@ -294,6 +304,10 @@ pub struct RecordDto {
     pub bot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub created_at: DateTime<Utc>,
     pub role: String,
     pub content_type: String,

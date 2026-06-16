@@ -335,6 +335,8 @@ fn patch_from_dto(patch: &RecordPatchDto) -> RecordPatch {
     RecordPatch {
         bot_id: patch.bot_id.clone(),
         session_id: patch.session_id.clone(),
+        tenant: patch.tenant.clone(),
+        source: patch.source.clone(),
         state_metadata: patch.state_metadata.as_ref().map(|sm| StateMetadata {
             step: sm.step,
             active_plan_id: sm.active_plan_id.clone(),
@@ -365,6 +367,8 @@ fn record_from_add_request(r: &AddRecordRequest, id: String, run_id: String) -> 
         run_id,
         bot_id: r.bot_id.clone(),
         session_id: r.session_id.clone(),
+        tenant: r.tenant.clone(),
+        source: r.source.clone(),
         created_at: Utc::now(),
         role: r.role.clone(),
         state_metadata: r.state_metadata.as_ref().map(|sm| StateMetadata {
@@ -401,6 +405,8 @@ fn record_to_dto(r: ContextRecord) -> RecordDto {
         run_id: r.run_id,
         bot_id: r.bot_id,
         session_id: r.session_id,
+        tenant: r.tenant,
+        source: r.source,
         created_at: r.created_at,
         role: r.role,
         content_type: r.content_type,
