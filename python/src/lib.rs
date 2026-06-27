@@ -23,8 +23,8 @@ use lance_context_core::{
     ContextNamespace as RustContextNamespace, ContextRecord, ContextStore, ContextStoreOptions,
     DistanceMetric, EvalConfig, EvalQuerySet, ExportConfig, ExportTask, GroupBy, IdIndexType,
     LifecycleQueryOptions, PartitionInfo, PartitionSelector, PartitionSpec, PreferenceForm,
-    RecordFilters, RecordPatch, Relationship, RetrievalMode, RetrieveResult, SearchResult,
-    SplitConfig, StateMetadata, LIFECYCLE_ACTIVE,
+    ReadProjection, RecordFilters, RecordPatch, Relationship, RetrievalMode, RetrieveResult,
+    SearchResult, SplitConfig, StateMetadata, LIFECYCLE_ACTIVE,
 };
 
 const DEFAULT_BINARY_CONTENT_TYPE: &str = "application/octet-stream";
@@ -753,7 +753,7 @@ impl Context {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (query, limit = None, filters_json = None, include_expired = false, include_retired = false, include_relationships = false))]
+    #[pyo3(signature = (query, limit = None, filters_json = None, include_expired = false, include_retired = false, include_relationships = false, include_binary = true, include_embedding = true))]
     fn search(
         &self,
         py: Python<'_>,
@@ -763,17 +763,24 @@ impl Context {
         include_expired: bool,
         include_retired: bool,
         include_relationships: bool,
+        include_binary: bool,
+        include_embedding: bool,
     ) -> PyResult<Vec<PyObject>> {
         let filters = filters_from_json(filters_json)?;
         let options = LifecycleQueryOptions::new(include_expired, include_retired);
+        let projection = ReadProjection {
+            text: true,
+            binary: include_binary,
+            embedding: include_embedding,
+        };
         let hits_res = py.allow_threads(|| {
-            self.runtime
-                .block_on(self.store.search_filtered_with_options(
-                    &query,
-                    limit,
-                    filters.as_ref(),
-                    options,
-                ))
+            self.runtime.block_on(self.store.search_filtered_projected(
+                &query,
+                limit,
+                filters.as_ref(),
+                options,
+                projection,
+            ))
         });
         let hits = hits_res.map_err(to_py_err)?;
         hits.into_iter()
@@ -919,7 +926,8 @@ impl Context {
         serde_json::to_string(&report).map_err(to_py_err)
     }
 
-    #[pyo3(signature = (limit = None, offset = None, filters_json = None, include_expired = false, include_retired = false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (limit = None, offset = None, filters_json = None, include_expired = false, include_retired = false, include_binary = true, include_embedding = true))]
     fn list(
         &self,
         py: Python<'_>,
@@ -928,17 +936,25 @@ impl Context {
         filters_json: Option<String>,
         include_expired: bool,
         include_retired: bool,
+        include_binary: bool,
+        include_embedding: bool,
     ) -> PyResult<Vec<PyObject>> {
         let filters = filters_from_json(filters_json)?;
         let options = LifecycleQueryOptions::new(include_expired, include_retired);
+        let projection = ReadProjection {
+            text: true,
+            binary: include_binary,
+            embedding: include_embedding,
+        };
         // Release GIL during data retrieval
         let records = py.allow_threads(|| {
             self.runtime
-                .block_on(self.store.list_filtered_with_options(
+                .block_on(self.store.list_filtered_projected(
                     limit,
                     offset,
                     filters.as_ref(),
                     options,
+                    projection,
                 ))
                 .map_err(to_py_err)
         })?;
@@ -947,6 +963,15 @@ impl Context {
             .into_iter()
             .map(|record| record_to_py(py, record))
             .collect()
+    }
+
+    fn get_blob(&self, py: Python<'_>, id: &str) -> PyResult<Option<PyObject>> {
+        let blob = py.allow_threads(|| {
+            self.runtime
+                .block_on(self.store.get_blob(id))
+                .map_err(to_py_err)
+        })?;
+        Ok(blob.map(|bytes| PyBytes::new(py, &bytes).into()))
     }
 
     #[pyo3(signature = (target_id, relation = None, limit = None, include_expired = false, include_retired = false))]

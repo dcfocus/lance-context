@@ -137,6 +137,12 @@ hits = ctx.search(
 )
 service_context = ctx.related("service://service-a", relation="describes")
 
+# Multi-modal-friendly reads: skip large media bytes for metadata/search
+# queries, then fetch a record's bytes on demand.
+lean = ctx.list(filters={"content_type": "image/png"}, include_binary=False)
+image_bytes = ctx.get_blob(lean[0]["id"])
+hits = ctx.search(query_embedding, include_binary=False)  # no bytes pulled into results
+
 # Hybrid retrieval combines lexical recall, vector recall, and existing filters
 # over the same context records.
 hybrid_hits = ctx.retrieve(
