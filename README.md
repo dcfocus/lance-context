@@ -95,6 +95,15 @@ ctx.add(
 )
 print(ctx.get(external_id="conversation-2026-03-01#turn-1"))
 ctx.delete(external_id="conversation-2026-03-01#turn-1")
+
+# Cross-modal retrieval: plug in a multi-modal (e.g. CLIP-style) embedder that
+# maps text and media into one shared space. Images are auto-embedded via
+# `embed_media`; a text query (embedded via `embed_texts`) then retrieves them.
+# lance-context bundles no models — supply your own provider.
+clip_ctx = Context.create("multimodal.lance", embedding_dim=512,
+                          embedding_provider=my_clip_provider)  # implements MultiModalEmbeddingProvider
+clip_ctx.add("user", image_bytes, content_type="image/png", external_id="img-1")
+results = clip_ctx.search("a photo of a cat")  # text query -> image results
 assert ctx.get(external_id="conversation-2026-03-01#turn-1") is None
 
 # Scoped recall and provenance-oriented metadata

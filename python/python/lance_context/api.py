@@ -19,7 +19,7 @@ from ._internal import (  # pyright: ignore[reportMissingImports]
     RemoteContext as _RemoteContext,
 )
 from ._internal import version as _version  # pyright: ignore[reportMissingImports]
-from .embeddings import EmbeddingProvider, _build_provider
+from .embeddings import EmbeddingProvider, _build_provider, supports_media
 
 __all__ = [
     "AsyncContext",
@@ -605,8 +605,11 @@ class Context:
             content_type = data_type
         payload, resolved_type = _normalize_content(content, content_type)
         provider = getattr(self, "_embedding_provider", None)
-        if embedding is None and provider is not None and isinstance(payload, str):
-            embedding = provider.embed_texts([payload])[0]
+        if embedding is None and provider is not None:
+            if isinstance(payload, str):
+                embedding = provider.embed_texts([payload])[0]
+            elif isinstance(payload, (bytes, bytearray)) and supports_media(provider):
+                embedding = provider.embed_media([(bytes(payload), resolved_type)])[0]
         defaults = getattr(self, "_default_fields", {})
         if bot_id is None:
             bot_id = defaults.get("bot_id")
@@ -677,8 +680,11 @@ class Context:
 
         payload, resolved_type = _normalize_content(content, content_type)
         provider = getattr(self, "_embedding_provider", None)
-        if embedding is None and provider is not None and isinstance(payload, str):
-            embedding = provider.embed_texts([payload])[0]
+        if embedding is None and provider is not None:
+            if isinstance(payload, str):
+                embedding = provider.embed_texts([payload])[0]
+            elif isinstance(payload, (bytes, bytearray)) and supports_media(provider):
+                embedding = provider.embed_media([(bytes(payload), resolved_type)])[0]
         defaults = getattr(self, "_default_fields", {})
         if bot_id is None:
             bot_id = defaults.get("bot_id")
@@ -1163,21 +1169,39 @@ class Context:
         )
 
     def _auto_embed_batch(self, records: list[dict[str, Any]]) -> None:
-        """Embed text records without an embedding in one provider call."""
+        """Embed records without an embedding in one provider call per modality."""
         provider = getattr(self, "_embedding_provider", None)
         if provider is None:
             return
-        indices = [
+        text_indices = [
             i
             for i, r in enumerate(records)
             if r.get("embedding") is None and isinstance(r.get("content"), str)
         ]
-        if not indices:
-            return
-        texts = [records[i]["content"] for i in indices]
-        vectors = provider.embed_texts(texts)
-        for i, vec in zip(indices, vectors):
-            records[i]["embedding"] = vec
+        if text_indices:
+            vectors = provider.embed_texts(
+                [records[i]["content"] for i in text_indices]
+            )
+            for i, vec in zip(text_indices, vectors):
+                records[i]["embedding"] = vec
+        if supports_media(provider):
+            media_indices = [
+                i
+                for i, r in enumerate(records)
+                if r.get("embedding") is None
+                and isinstance(r.get("content"), (bytes, bytearray))
+            ]
+            if media_indices:
+                items = [
+                    (
+                        bytes(records[i]["content"]),
+                        records[i].get("data_type") or "application/octet-stream",
+                    )
+                    for i in media_indices
+                ]
+                vectors = provider.embed_media(items)
+                for i, vec in zip(media_indices, vectors):
+                    records[i]["embedding"] = vec
 
     def snapshot(self, label: str | None = None) -> str:
         return self._inner.snapshot(label)
@@ -1202,8 +1226,13 @@ class Context:
         include_embedding: bool = True,
     ) -> list[dict[str, Any]]:
         provider = getattr(self, "_embedding_provider", None)
-        if isinstance(query, str) and provider is not None:
-            query = provider.embed_texts([query])[0]
+        if provider is not None:
+            if isinstance(query, str):
+                query = provider.embed_texts([query])[0]
+            elif isinstance(query, (bytes, bytearray)) and supports_media(provider):
+                query = provider.embed_media(
+                    [(bytes(query), "application/octet-stream")]
+                )[0]
         vector = _coerce_vector(query)
         results = self._inner.search(
             vector,
