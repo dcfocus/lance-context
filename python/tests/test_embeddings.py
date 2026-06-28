@@ -46,7 +46,12 @@ def _ctx_no_provider() -> Context:
 
 
 class _DummyInner:
-    """Minimal inner stub that records calls."""
+    """Minimal inner stub that records calls.
+
+    Captures only the leading arguments the tests assert on and absorbs the
+    rest with ``*args, **kwargs``, so the stub doesn't drift as the real
+    binding signatures grow (e.g. new ``tenant``/``source``/projection args).
+    """
 
     def __init__(self) -> None:
         self.add_calls: list[dict[str, Any]] = []
@@ -54,25 +59,14 @@ class _DummyInner:
         self.search_calls: list[tuple[Any, ...]] = []
         self.upsert_calls: list[dict[str, Any]] = []
 
-    def add(  # noqa: PLR0913
+    def add(
         self,
         role: str,
         content: Any,
-        data_type: Any,
-        embedding: Any,
-        bot_id: Any,
-        session_id: Any,
-        external_id: Any,
-        state_metadata: Any,
-        metadata_json: Any,
-        expires_at: Any = None,
-        retention_policy: Any = None,
-        lifecycle_status: Any = None,
-        retired_at: Any = None,
-        retired_reason: Any = None,
-        supersedes_id: Any = None,
-        superseded_by_id: Any = None,
-        relationships_json: Any = None,
+        data_type: Any = None,
+        embedding: Any = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         self.add_calls.append(
             {"role": role, "content": content, "embedding": embedding}
@@ -81,44 +75,23 @@ class _DummyInner:
     def add_many(self, records: list[dict[str, Any]]) -> None:
         self.add_many_calls.append(records)
 
-    def search(
-        self,
-        vector: list[float],
-        limit: Any,
-        filters_json: Any,
-        include_expired: bool = False,
-        include_retired: bool = False,
-        include_relationships: bool = False,
-    ) -> list[Any]:
-        self.search_calls.append(
-            (
-                vector,
-                limit,
-                filters_json,
-                include_expired,
-                include_retired,
-                include_relationships,
-            )
-        )
+    def search(self, vector: list[float], *args: Any, **kwargs: Any) -> list[Any]:
+        self.search_calls.append((vector, *args))
         return []
 
     def upsert(  # noqa: PLR0913
         self,
         role: str,
         content: Any,
-        data_type: Any,
-        embedding: Any,
-        bot_id: Any,
-        session_id: Any,
-        external_id: Any,
-        metadata_json: Any,
-        expires_at: Any = None,
-        retention_policy: Any = None,
-        lifecycle_status: Any = None,
-        retired_at: Any = None,
-        retired_reason: Any = None,
-        relationships_json: Any = None,
-        key: str = "external_id",
+        data_type: Any = None,
+        embedding: Any = None,
+        bot_id: Any = None,
+        session_id: Any = None,
+        tenant: Any = None,
+        source: Any = None,
+        external_id: Any = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         self.upsert_calls.append(
             {"role": role, "content": content, "embedding": embedding}
