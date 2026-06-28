@@ -29,7 +29,7 @@ pub use record::{
 };
 pub use store::{
     CompactionConfig, CompactionStats, ContextStore, ContextStoreOptions, DistanceMetric,
-    IdIndexType,
+    IdIndexType, ReadProjection,
 };
 
 // Re-export CompactionMetrics from lance for Python bindings

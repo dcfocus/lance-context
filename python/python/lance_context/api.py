@@ -1198,6 +1198,8 @@ class Context:
         include_expired: bool = False,
         include_retired: bool = False,
         include_relationships: bool = False,
+        include_binary: bool = True,
+        include_embedding: bool = True,
     ) -> list[dict[str, Any]]:
         provider = getattr(self, "_embedding_provider", None)
         if isinstance(query, str) and provider is not None:
@@ -1210,6 +1212,8 @@ class Context:
             include_expired,
             include_retired,
             include_relationships,
+            include_binary,
+            include_embedding,
         )
         return [_normalize_search_hit(item) for item in results]
 
@@ -1401,6 +1405,8 @@ class Context:
         *,
         include_expired: bool = False,
         include_retired: bool = False,
+        include_binary: bool = True,
+        include_embedding: bool = True,
     ) -> list[dict[str, Any]]:
         """Return stored entries.
 
@@ -1412,11 +1418,16 @@ class Context:
                 created_at range filters, or metadata fields.
             include_expired: Include records whose ``expires_at`` is in the past.
             include_retired: Include retired/superseded/revoked records.
+            include_binary: Load ``binary_payload``. Set ``False`` to avoid
+                materializing large media bytes for metadata/listing queries;
+                fetch a record's bytes on demand with :meth:`get_blob`.
+            include_embedding: Load the embedding vector. Set ``False`` to skip
+                it when only metadata is needed.
 
         Returns:
             List of entry dicts with keys: id, run_id, role, content_type,
             text, binary, embedding, created_at, metadata, state_metadata, and
-            lifecycle metadata.
+            lifecycle metadata. Omitted payloads come back as ``None``.
         """
         results = self._inner.list(
             limit,
@@ -1424,8 +1435,20 @@ class Context:
             _json_dumps(filters, "filters"),
             include_expired,
             include_retired,
+            include_binary,
+            include_embedding,
         )
         return [_normalize_record(item) for item in results]
+
+    def get_blob(self, id: str) -> bytes | None:
+        """Fetch a single record's ``binary_payload`` bytes on demand.
+
+        Pairs with ``list(..., include_binary=False)`` / ``search(...,
+        include_binary=False)``: query metadata cheaply, then pull the media for
+        the records you actually need. Returns ``None`` if the record or its
+        binary payload is absent.
+        """
+        return self._inner.get_blob(id)
 
     def get(
         self, *, id: str | None = None, external_id: str | None = None
