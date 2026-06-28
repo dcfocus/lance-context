@@ -989,6 +989,9 @@ class Context:
                         field_name=f"records[{index}].retired_at",
                     ),
                     "retired_reason": record.get("retired_reason"),
+                    "payload_uri": record.get("payload_uri"),
+                    "payload_size": record.get("payload_size"),
+                    "payload_checksum": record.get("payload_checksum"),
                 }
             )
 

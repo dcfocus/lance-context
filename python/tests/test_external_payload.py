@@ -89,3 +89,36 @@ def test_update_attaches_payload_reference_later(tmp_path: Path) -> None:
     assert result["updated"] is True
     assert result["record"]["payload_uri"] == object_uri
     assert ctx.fetch_payload(result["record"]["id"]) == payload
+
+
+def test_upsert_many_forwards_payload_reference(tmp_path: Path) -> None:
+    uri = str(tmp_path / "context.lance")
+    ctx = Context.create(uri)
+
+    object_uri = str(tmp_path / "frame-001.jpg")
+    payload = b"\xff\xd8\xff external jpeg bytes"
+    ctx.put_payload(object_uri, payload)
+
+    # Bulk insert-or-replace must carry the external reference through, just like
+    # add_many / single upsert.
+    ctx.upsert_many(
+        [
+            {
+                "role": "assistant",
+                "content": "captured frame",
+                "content_type": "image/jpeg",
+                "external_id": "frame-001",
+                "payload_uri": object_uri,
+                "payload_size": len(payload),
+                "payload_checksum": "sha256:frame",
+            }
+        ]
+    )
+
+    record = ctx.get(external_id="frame-001")
+    assert record is not None
+    assert record["payload_uri"] == object_uri
+    assert record["payload_size"] == len(payload)
+    assert record["payload_checksum"] == "sha256:frame"
+    assert record["binary"] is None
+    assert ctx.fetch_payload(record["id"]) == payload
