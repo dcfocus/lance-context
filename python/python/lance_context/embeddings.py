@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["EmbeddingProvider", "OpenAIProvider", "SentenceTransformersProvider"]
+__all__ = [
+    "EmbeddingProvider",
+    "MultiModalEmbeddingProvider",
+    "OpenAIProvider",
+    "SentenceTransformersProvider",
+]
 
 
 @runtime_checkable
@@ -21,6 +26,32 @@ class EmbeddingProvider(Protocol):
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Return one embedding vector per input text."""
         ...
+
+
+@runtime_checkable
+class MultiModalEmbeddingProvider(EmbeddingProvider, Protocol):
+    """An embedding provider that also embeds non-text media (images, audio)
+    into the **same** vector space as :meth:`embed_texts`.
+
+    Sharing one space is what enables **cross-modal retrieval**: an image added
+    with :meth:`embed_media` and a text query embedded with :meth:`embed_texts`
+    land in the same space, so ``ctx.search("a photo of a cat")`` can return
+    image records (no extra wiring — it flows through the normal vector search).
+
+    ``embed_media`` receives ``(payload_bytes, content_type)`` for each item and
+    must return vectors of the same ``dims`` (and in the same space) as
+    :meth:`embed_texts`. lance-context bundles no models — supply your own
+    (e.g. a CLIP-style encoder).
+    """
+
+    def embed_media(self, items: list[tuple[bytes, str]]) -> list[list[float]]:
+        """Return one embedding per ``(payload_bytes, content_type)`` item."""
+        ...
+
+
+def supports_media(provider: Any) -> bool:
+    """Whether ``provider`` can embed non-text media into the shared space."""
+    return provider is not None and callable(getattr(provider, "embed_media", None))
 
 
 def _build_provider(config: dict[str, Any]) -> EmbeddingProvider:

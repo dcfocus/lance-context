@@ -8,12 +8,16 @@ from .api import (  # pyright: ignore[reportMissingImports]
     RemoteContext,
     __version__,
 )
+from .embeddings import (  # pyright: ignore[reportMissingImports]
+    MultiModalEmbeddingProvider,
+)
 
 __all__ = [
     "AsyncContext",
     "Context",
     "ContextNamespace",
     "EmbeddingProvider",
+    "MultiModalEmbeddingProvider",
     "RemoteContext",
     "__version__",
 ]
